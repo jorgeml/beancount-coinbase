@@ -23,7 +23,7 @@ VALID_STATUS = ["completed", "failed", "expired", "cancelled"]
 
 
 def get_account_id(file):
-    if not re.match(".*\.json", path.basename(file.name)):
+    if not re.match(r'.*\.json', path.basename(file.name)):
         return False
 
     with open(file.name) as data_file:
@@ -45,7 +45,7 @@ def get_account_name(file):
 
 
 def get_transactions(file):
-    if not re.match(".*\.json", path.basename(file.name)):
+    if not re.match(r'.*\.json', path.basename(file.name)):
         return False
 
     with open(file.name) as data_file:
