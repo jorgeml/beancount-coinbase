@@ -21,6 +21,7 @@ CLIENT_ID = environ.get("CLIENT_ID")
 CLIENT_SECRET = environ.get("CLIENT_SECRET")
 EMAIL = environ.get("EMAIL")
 data_folder = Path(environ.get("DATA_FOLDER"))
+API_VERSION = "2022-10-02"
 
 def authenticate():
     state = "".join(
@@ -44,7 +45,7 @@ def authenticate():
     return auth_code
 
 def authorize(auth_code):
-    headers = {"CB-VERSION": "2022-10-02"}
+    headers = {"CB-VERSION": API_VERSION}
     params = {
         "grant_type": "authorization_code",
         "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
@@ -59,14 +60,14 @@ def authorize(auth_code):
 
 
 def get_accounts(token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": "2022-10-02"}
+    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
     params = {}
     r = requests.get("https://api.coinbase.com/v2/accounts", headers=headers, params=params)
     r.raise_for_status()
     return r.json()
 
 def get_account_information(account, token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": "2022-10-02"}
+    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
     params = {}
     account_id = account.get("id")
     information_request = requests.get(
@@ -78,12 +79,12 @@ def get_account_information(account, token):
     return information_request.json()["data"]
 
 def get_account_transactions(account, token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": "2022-10-02"}
+    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
     params = {"order":"asc"}
     account_id = account.get("id")
     transactions = []
     transactions_request = requests.get(
-        f"https://api.coinbase.com/v2/accounts/{account_id}/transactions",
+        f"https://api.coinbase.com/v2/accounts/{account_id}/transactions?expand=all",
         headers=headers,
         params=params,
     )
@@ -103,60 +104,8 @@ def get_account_transactions(account, token):
         next_uri = transactions_response["pagination"]["next_uri"]
     return transactions
 
-def get_account_buys(account, token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": "2022-10-02"}
-    params = {"order":"asc"}
-    account_id = account.get("id")
-    buys = []
-    buys_request = requests.get(
-        f"https://api.coinbase.com/v2/accounts/{account_id}/buys",
-        headers=headers,
-        params=params,
-    )
-    buys_request.raise_for_status()
-    buys_response = buys_request.json()
-    buys.extend(buys_response["data"])
-    next_uri = buys_response["pagination"]["next_uri"]
-    while (next_uri is not None):
-        buys_request = requests.get(
-            f"https://api.coinbase.com{next_uri}",
-            headers=headers,
-            params={},
-        )
-        buys_request.raise_for_status()
-        buys_response = buys_request.json()
-        buys.extend(buys_response["data"])
-        next_uri = buys_response["pagination"]["next_uri"]
-    return buys
-
-def get_account_sells(account, token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": "2022-10-02"}
-    params = {"order":"asc"}
-    account_id = account.get("id")
-    sells = []
-    sells_request = requests.get(
-        f"https://api.coinbase.com/v2/accounts/{account_id}/sells",
-        headers=headers,
-        params=params,
-    )
-    sells_request.raise_for_status()
-    sells_response = sells_request.json()
-    sells.extend(sells_response["data"])
-    next_uri = sells_response["pagination"]["next_uri"]
-    while (next_uri is not None):
-        sells_request = requests.get(
-            f"https://api.coinbase.com{next_uri}",
-            headers=headers,
-            params={},
-        )
-        sells_request.raise_for_status()
-        sells_response = sells_request.json()
-        sells.extend(sells_response["data"])
-        next_uri = sells_response["pagination"]["next_uri"]
-    return sells
-
 def get_account_deposits(account, token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": "2022-10-02"}
+    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
     params = {"order":"asc"}
     account_id = account.get("id")
     deposits = []
@@ -182,7 +131,7 @@ def get_account_deposits(account, token):
     return deposits
 
 def get_account_withdrawals(account, token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": "2022-10-02"}
+    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
     params = {"order":"asc"}
     account_id = account.get("id")
     withdrawals = []
@@ -208,7 +157,7 @@ def get_account_withdrawals(account, token):
     return withdrawals
 
 def logout(auth_code,token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": "2022-10-02"}
+    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
     params = {"token": auth_code}
     r = requests.post("https://api.coinbase.com/oauth/revoke", headers=headers, params=params)
     r.raise_for_status()
@@ -224,8 +173,6 @@ def main(argv):
         entries = {}
         entries["account"]=get_account_information(account, token)
         entries["transactions"]=get_account_transactions(account, token)
-        entries["buys"]=get_account_buys(account, token)
-        entries["sells"]=get_account_sells(account, token)
         entries["deposits"]=get_account_deposits(account, token)
         entries["withdrawals"]=get_account_withdrawals(account, token)
         account_name = account.get("name")
