@@ -3,100 +3,118 @@
 from os import environ, path
 from dotenv import load_dotenv
 import json
+import hmac
+import hashlib
 import requests
 import sys
 import getopt
 import random
 import string
+import time
 import urllib.parse
 from datetime import date, timedelta
 from pathlib import Path
+from requests.auth import AuthBase
 
 # Find .env file
 basedir = path.abspath(path.dirname(__file__))
 load_dotenv(path.join(basedir, ".env"))
 
 # General Config
-CLIENT_ID = environ.get("CLIENT_ID")
-CLIENT_SECRET = environ.get("CLIENT_SECRET")
-EMAIL = environ.get("EMAIL")
+API_KEY = environ.get("API_KEY")
+API_SECRET = environ.get("API_SECRET")
 data_folder = Path(environ.get("DATA_FOLDER"))
 API_VERSION = "2022-10-02"
 
-def authenticate():
-    state = "".join(
-        random.choice(string.ascii_letters + string.digits) for i in range(10)
-    )
-    params = {
-        "response_type": "code",
-        "client_id": CLIENT_ID,
-        "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
-        "state": state,
-        "scope": "wallet:user:read,wallet:accounts:read,wallet:transactions:read,wallet:buys:read,wallet:sells:read,wallet:deposits:read,wallet:withdrawals:read"        
-    }
-    encoded_params = urllib.parse.urlencode(params)
-    login_url = f"https://www.coinbase.com/oauth/authorize?{encoded_params}"
-    print(login_url)
-    print(
-        "Click on the link and copy and paste the authorization code."
-    )
-    print(f"Check that state is", state)
-    auth_code = input("Auth code:")
-    return auth_code
 
-def authorize(auth_code):
+# Coinbase Authentication code from https://docs.cloud.coinbase.com/sign-in-with-coinbase/docs/api-key-authentication
+# Create custom authentication for Coinbase API
+class CoinbaseWalletAuth(AuthBase):
+    def __init__(self, api_key, secret_key):
+        self.api_key = api_key
+        self.secret_key = secret_key
+
+    def __call__(self, request):
+        timestamp = str(int(time.time()))
+        message = timestamp + request.method + request.path_url + (request.body or "")
+        signature = hmac.new(
+            self.secret_key.encode(), message.encode(), hashlib.sha256
+        ).hexdigest()
+
+        request.headers.update(
+            {
+                "CB-ACCESS-SIGN": signature,
+                "CB-ACCESS-TIMESTAMP": timestamp,
+                "CB-ACCESS-KEY": self.api_key,
+            }
+        )
+        return request
+
+
+api_url = "https://api.coinbase.com/v2/"
+auth = CoinbaseWalletAuth(API_KEY, API_SECRET)
+
+
+def get_accounts():
     headers = {"CB-VERSION": API_VERSION}
-    params = {
-        "grant_type": "authorization_code",
-        "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "code": auth_code,
-    }
-    r = requests.post("https://api.coinbase.com/oauth/token", params=params, headers=headers)
-    r.raise_for_status()
-    access_token = r.json().get("access_token")
-    return access_token
-
-
-def get_accounts(token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
     params = {}
-    r = requests.get("https://api.coinbase.com/v2/accounts", headers=headers, params=params)
-    r.raise_for_status()
-    return r.json()
+    accounts = []
+    accounts_request = requests.get(
+        api_url + "accounts", headers=headers, params=params, auth=auth
+    )
+    accounts_request.raise_for_status()
+    accounts_response = accounts_request.json()
+    accounts.extend(accounts_response["data"])
+    next_uri = accounts_response["pagination"]["next_uri"]
+    while next_uri is not None:
+        accounts_request = requests.get(
+            f"https://api.coinbase.com{next_uri}",
+            headers=headers,
+            params={},
+            auth=auth,
+        )
+        accounts_request.raise_for_status()
+        accounts_response = accounts_request.json()
+        accounts.extend(accounts_response["data"])
+        next_uri = accounts_response["pagination"]["next_uri"]
+    return accounts
 
-def get_account_information(account, token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
+
+def get_account_information(account):
+    headers = {"CB-VERSION": API_VERSION}
     params = {}
     account_id = account.get("id")
     information_request = requests.get(
-        f"https://api.coinbase.com/v2/accounts/{account_id}",
+        api_url + f"accounts/{account_id}",
         headers=headers,
         params=params,
+        auth=auth,
     )
     information_request.raise_for_status()
     return information_request.json()["data"]
 
-def get_account_transactions(account, token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
-    params = {"order":"asc"}
+
+def get_account_transactions(account):
+    headers = {"CB-VERSION": API_VERSION}
+    params = {"expand": "all", "order": "asc"}
     account_id = account.get("id")
     transactions = []
     transactions_request = requests.get(
-        f"https://api.coinbase.com/v2/accounts/{account_id}/transactions?expand=all",
+        api_url + f"accounts/{account_id}/transactions",
         headers=headers,
         params=params,
+        auth=auth,
     )
     transactions_request.raise_for_status()
     transactions_response = transactions_request.json()
     transactions.extend(transactions_response["data"])
     next_uri = transactions_response["pagination"]["next_uri"]
-    while (next_uri is not None):
+    while next_uri is not None:
         transactions_request = requests.get(
             f"https://api.coinbase.com{next_uri}",
             headers=headers,
             params={},
+            auth=auth,
         )
         transactions_request.raise_for_status()
         transactions_response = transactions_request.json()
@@ -104,25 +122,28 @@ def get_account_transactions(account, token):
         next_uri = transactions_response["pagination"]["next_uri"]
     return transactions
 
-def get_account_deposits(account, token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
-    params = {"order":"asc"}
+
+def get_account_deposits(account):
+    headers = {"CB-VERSION": API_VERSION}
+    params = {"order": "asc"}
     account_id = account.get("id")
     deposits = []
     deposits_request = requests.get(
-        f"https://api.coinbase.com/v2/accounts/{account_id}/deposits",
+        api_url + f"accounts/{account_id}/deposits",
         headers=headers,
         params=params,
+        auth=auth,
     )
     deposits_request.raise_for_status()
     deposits_response = deposits_request.json()
     deposits.extend(deposits_response["data"])
     next_uri = deposits_response["pagination"]["next_uri"]
-    while (next_uri is not None):
+    while next_uri is not None:
         deposits_request = requests.get(
             f"https://api.coinbase.com{next_uri}",
             headers=headers,
             params={},
+            auth=auth,
         )
         deposits_request.raise_for_status()
         deposits_response = deposits_request.json()
@@ -130,25 +151,28 @@ def get_account_deposits(account, token):
         next_uri = deposits_response["pagination"]["next_uri"]
     return deposits
 
-def get_account_withdrawals(account, token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
-    params = {"order":"asc"}
+
+def get_account_withdrawals(account):
+    headers = {"CB-VERSION": API_VERSION}
+    params = {"order": "asc"}
     account_id = account.get("id")
     withdrawals = []
     withdrawals_request = requests.get(
-        f"https://api.coinbase.com/v2/accounts/{account_id}/withdrawals",
+        api_url + f"accounts/{account_id}/withdrawals",
         headers=headers,
         params=params,
+        auth=auth,
     )
     withdrawals_request.raise_for_status()
     withdrawals_response = withdrawals_request.json()
     withdrawals.extend(withdrawals_response["data"])
     next_uri = withdrawals_response["pagination"]["next_uri"]
-    while (next_uri is not None):
+    while next_uri is not None:
         withdrawals_request = requests.get(
             f"https://api.coinbase.com{next_uri}",
             headers=headers,
             params={},
+            auth=auth,
         )
         withdrawals_request.raise_for_status()
         withdrawals_response = withdrawals_request.json()
@@ -156,30 +180,22 @@ def get_account_withdrawals(account, token):
         next_uri = withdrawals_response["pagination"]["next_uri"]
     return withdrawals
 
-def logout(auth_code,token):
-    headers = {"Authorization": f"Bearer {token}", "CB-VERSION": API_VERSION}
-    params = {"token": auth_code}
-    r = requests.post("https://api.coinbase.com/oauth/revoke", headers=headers, params=params)
-    r.raise_for_status()
-    print("Log out successful")
 
 def main(argv):
-    auth_code = authenticate()
-    token = authorize(auth_code)
-    accounts = get_accounts(token)
-    for account in accounts.get("data"):
+    accounts = get_accounts()
+    for account in accounts:
         if account.get("created_at") is None:
             continue
         entries = {}
-        entries["account"]=get_account_information(account, token)
-        entries["transactions"]=get_account_transactions(account, token)
-        entries["deposits"]=get_account_deposits(account, token)
-        entries["withdrawals"]=get_account_withdrawals(account, token)
+        entries["account"] = get_account_information(account)
+        entries["transactions"] = get_account_transactions(account)
+        entries["deposits"] = get_account_deposits(account)
+        entries["withdrawals"] = get_account_withdrawals(account)
         account_name = account.get("name")
         filename = data_folder / f"{date.today()}-coinbase-{account_name}.json"
         with open(filename, "w") as json_file:
-                json.dump(entries, json_file, indent=2, ensure_ascii=False)
-    logout(auth_code,token)
+            json.dump(entries, json_file, indent=2, ensure_ascii=False)
+
 
 if __name__ == "__main__":
     main(sys.argv[1:])
