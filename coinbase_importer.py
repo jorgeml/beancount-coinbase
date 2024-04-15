@@ -100,7 +100,7 @@ class Importer(importer.ImporterProtocol):
 
             if transaction["status"] not in VALID_STATUS:
                 continue
-            
+
             tx_description = transaction["description"]
             if tx_description is not None:
                 tx_description = tx_description.replace("\n", "")
@@ -110,7 +110,6 @@ class Importer(importer.ImporterProtocol):
                 "type": transaction["type"],
                 "description": tx_description,
                 "created_date": transaction["created_at"],
-                "updated_date": transaction["updated_at"],
             }
 
             meta = data.new_metadata(file.name, next(counter), metadata)
@@ -119,14 +118,9 @@ class Importer(importer.ImporterProtocol):
             price = get_unit_price(transaction)
             payee = None #transaction["counterPartyName"]
 
-            #if "counterPartySubEntityName" in transaction:
-            #    name = transaction["counterPartySubEntityName"]
-            #else:
-            #    name = None
-
-            title = transaction["details"]["title"]
-            subtitle = transaction["details"]["subtitle"]
-            header = transaction["details"]["header"]
+            title = None # transaction["details"]["title"]
+            subtitle = None # transaction["details"]["subtitle"]
+            header = None # transaction["details"]["header"]
 
             narration = " / ".join(filter(None, [payee, title, subtitle, header]))
 
