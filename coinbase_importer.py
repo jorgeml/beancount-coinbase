@@ -101,14 +101,14 @@ class Importer(importer.ImporterProtocol):
             if transaction["status"] not in VALID_STATUS:
                 continue
 
-            tx_description = transaction["description"]
-            if tx_description is not None:
-                tx_description = tx_description.replace("\n", "")
+            #tx_description = transaction["description"]
+            #if tx_description is not None:
+            #    tx_description = tx_description.replace("\n", "")
 
             metadata = {
                 "id": transaction["id"],
                 "type": transaction["type"],
-                "description": tx_description,
+                #"description": tx_description,
                 "created_date": transaction["created_at"],
             }
 
