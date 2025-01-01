@@ -5,96 +5,57 @@ This importer parses a list of accounts, transactions, buy, sells, deposits and 
 Based on Adam Gibbins <adam@adamgibbins.com>'s Monzo API importer.
 
 """
-import datetime
-import itertools
-import json
-import re
-from os import path
-
-from beancount.ingest import importer
-from beancount.core import data, flags
-from beancount.core.number import D
-from beancount.utils.date_utils import parse_date_liberally
 
 __author__ = "Jorge Martínez López <jorgeml@jorgeml.me>"
 __license__ = "MIT"
 
+import datetime
+import itertools
+import json
+import re
+
+from os import path
+
+from beancount.core import account
+from beancount.core import amount
+from beancount.core import data
+from beancount.core import flags
+from beancount.core import position
+from beancount.core.number import D
+from beancount.core.number import ZERO
+
+import beangulp
+from beangulp import mimetypes
+from beangulp.testing import main
+
 VALID_STATUS = ["completed", "failed", "expired", "cancelled"]
 
+class Importer(beangulp.Importer):
+    """An importer for Coinbase API JSON files."""
 
-def get_account_id(file):
-    if not re.match(r'.*\.json', path.basename(file.name)):
-        return False
+    def __init__(self, account_id, account):
+        self.account_id = account_id
+        self.importer_account = account
 
-    with open(file.name) as data_file:
-        try:
-            account_data = json.load(data_file)["account"]
-            if "id" in account_data:
-                return account_data["id"]
-            else:
-                return False
-        except KeyError:
-            return False
+    def identify(self, filepath):
+        identifier = get_account_id(filepath)
+        return identifier == self.account_id
 
-def get_account_name(file):
-    with open(file.name) as data_file:
-        try:
-            return json.load(data_file)["account"]["name"]
-        except KeyError:
-            return None
+    def filename(self, filepath):
+        account_name = get_account_name(filepath)
+        return f'coinbase.{account_name}.json'
+    
+    def account(self, filepath):
+        return self.importer_account
 
+    def date(self, filepath):
+        transactions = get_transactions(filepath)
+        return parse_transaction_time(transactions[-1]["created_at"])
 
-def get_transactions(file):
-    if not re.match(r'.*\.json', path.basename(file.name)):
-        return False
-
-    with open(file.name) as data_file:
-        try:
-            return json.load(data_file)["transactions"]
-        except KeyError:
-            print("No transactions in file.")
-            return False
-
-
-def get_unit_price(transaction):
-    total_amount = D(transaction["amount"]["amount"])
-    total_native_amount = D(transaction["native_amount"]["amount"])
-    # all prices need to be positive
-    unit_price = round(abs(total_native_amount / total_amount), 5)
-    return data.Amount(unit_price, transaction["native_amount"]["currency"])
-
-def get_payee_account(file, payeeUid, payeeAccountUid):
-    with open(file.name) as data_file:
-        payee_data = json.load(data_file)["payees"]["payees"]
-        for payee in payee_data:
-            if payeeUid == payee["payeeUid"]:
-                for account in payee["accounts"]:
-                    if payeeAccountUid == account["payeeAccountUid"]:
-                        return account
-        return None
-
-
-def get_balance(file):
-    with open(file.name) as data_file:
-        return json.load(data_file)["account"]["balance"]
-
-
-class Importer(importer.ImporterProtocol):
-    def __init__(self, id, account):
-        self.id = id
-        self.account = account
-
-    def name(self):
-        return '{}: "{}"'.format(super().name(), self.account)
-
-    def identify(self, file):
-        identifier = get_account_id(file)
-        return identifier == self.id
-
-    def extract(self, file, existing_entries=None):
+    def extract(self, filepath, existing=None):
         entries = []
         counter = itertools.count()
-        transactions = get_transactions(file)
+        transactions = get_transactions(filepath)
 
         for transaction in transactions:
 
@@ -112,9 +73,9 @@ class Importer(importer.ImporterProtocol):
                 "created_date": transaction["created_at"],
             }
 
-            meta = data.new_metadata(file.name, next(counter), metadata)
+            meta = data.new_metadata(filepath, next(counter), metadata)
 
-            date = parse_date_liberally(transaction["created_at"])
+            date = parse_transaction_time(transaction["created_at"])
             price = get_unit_price(transaction)
             payee = None #transaction["counterPartyName"]
 
@@ -125,13 +86,13 @@ class Importer(importer.ImporterProtocol):
             narration = " / ".join(filter(None, [payee, title, subtitle, header]))
 
             postings = []
-            unit = data.Amount(
+            unit = amount.Amount(
                 D(transaction["amount"]["amount"]),
                 transaction["amount"]["currency"],
             )
 
             postings.append(
-                    data.Posting(self.account, unit, None, price, None, None)
+                    data.Posting(self.importer_account, unit, None, price, None, None)
                 )
 
             link = set()
@@ -142,32 +103,91 @@ class Importer(importer.ImporterProtocol):
                 )
             )
 
-        balance_date = parse_date_liberally(transactions[-1]["created_at"])
+        balance_date = parse_transaction_time(transactions[-1]["created_at"])
         balance_date += datetime.timedelta(days=1)
 
-        balance = get_balance(file)
-        balance_amount = data.Amount(
+        balance = get_balance(filepath)
+        balance_amount = amount.Amount(
             D(balance.get("amount")),
             balance.get("currency"),
         )
 
-        meta = data.new_metadata(file.name, next(counter))
+        meta = data.new_metadata(filepath, next(counter))
 
         balance_entry = data.Balance(
-            meta, balance_date, self.account, balance_amount, None, None
+            meta, balance_date, self.importer_account, balance_amount, None, None
         )
 
         entries.append(balance_entry)
 
         return data.sorted(entries)
 
-    def file_account(self, file):
-        return self.account
 
-    def file_name(self, file):
-        name = get_account_name(file)
-        return f"coinbase.{name}.json"
+def get_account_id(filepath):
+    mimetype, encoding = mimetypes.guess_type(filepath)
+    if mimetype != 'application/json':
+        return False
 
-    def file_date(self, file):
-        balance = get_balance(file)
-        return parse_date_liberally(balance["updated_at"])
+    with open(filepath) as data_file:
+        try:
+            account_data = json.load(data_file)["account"]
+            if "id" in account_data:
+                return account_data["id"]
+            else:
+                return False
+        except KeyError:
+            return False
+
+def get_account_name(filepath):
+    with open(filepath) as data_file:
+        try:
+            return json.load(data_file)["account"]["name"]
+        except KeyError:
+            return None
+
+
+def get_transactions(filepath):
+    mimetype, encoding = mimetypes.guess_type(filepath)
+    if mimetype != 'application/json':
+        return False
+
+    with open(filepath) as data_file:
+        try:
+            return json.load(data_file)["transactions"]
+        except KeyError:
+            print("No transactions in file.")
+            return False
+
+
+def get_unit_price(transaction):
+    total_amount = D(transaction["amount"]["amount"])
+    total_native_amount = D(transaction["native_amount"]["amount"])
+    # all prices need to be positive
+    unit_price = round(abs(total_native_amount / total_amount), 5)
+    return amount.Amount(unit_price, transaction["native_amount"]["currency"])
+
+def get_payee_account(filepath, payeeUid, payeeAccountUid):
+    with open(filepath) as data_file:
+        payee_data = json.load(data_file)["payees"]["payees"]
+        for payee in payee_data:
+            if payeeUid == payee["payeeUid"]:
+                for account in payee["accounts"]:
+                    if payeeAccountUid == account["payeeAccountUid"]:
+                        return account
+        return None
+
+def get_balance(filepath):
+    with open(filepath) as data_file:
+        return json.load(data_file)["account"]["balance"]
+
+def parse_transaction_time(date_str):
+    """Parse a time string and return a datetime object.
+
+    Args:
+      date_str: A string, the date to be parsed, in ISO format.
+    Returns:
+      A datetime.date() instance.
+    """
+    timestamp = datetime.datetime.fromisoformat(date_str)
+    return timestamp.date()
+
