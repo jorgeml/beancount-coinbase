@@ -1,66 +1,64 @@
 #!/usr/bin/python3
 
-from os import environ, path
-from dotenv import load_dotenv
-import json
-import hmac
-import hashlib
-import requests
-import sys
-import getopt
-import random
-import string
-import time
-import urllib.parse
+from cryptography.hazmat.primitives import serialization
 from datetime import date, timedelta
+from dotenv import load_dotenv
+from os import environ, path
 from pathlib import Path
 from requests.auth import AuthBase
+import hashlib
+import hmac
+import json
+import jwt
+import random
+import requests
+import secrets
+import sys
+import time
+import urllib.parse
 
 # Find .env file
 basedir = path.abspath(path.dirname(__file__))
 load_dotenv(path.join(basedir, ".env"))
 
 # General Config
-API_KEY = environ.get("API_KEY")
-API_SECRET = environ.get("API_SECRET")
+key_name = environ.get("API_KEY_NAME")
+key_secret = environ.get("API_KEY_SECRET")
 data_folder = Path(environ.get("DATA_FOLDER"))
-API_VERSION = "2022-10-02"
 
 
-# Coinbase Authentication code from https://docs.cloud.coinbase.com/sign-in-with-coinbase/docs/api-key-authentication
-# Create custom authentication for Coinbase API
-class CoinbaseWalletAuth(AuthBase):
-    def __init__(self, api_key, secret_key):
-        self.api_key = api_key
-        self.secret_key = secret_key
-
-    def __call__(self, request):
-        timestamp = str(int(time.time()))
-        message = timestamp + request.method + request.path_url + (request.body or "")
-        signature = hmac.new(
-            self.secret_key.encode(), message.encode(), hashlib.sha256
-        ).hexdigest()
-
-        request.headers.update(
-            {
-                "CB-ACCESS-SIGN": signature,
-                "CB-ACCESS-TIMESTAMP": timestamp,
-                "CB-ACCESS-KEY": self.api_key,
-            }
-        )
-        return request
+def build_jwt(uri):
+    private_key_bytes = key_secret.encode('utf-8')
+    private_key = serialization.load_pem_private_key(private_key_bytes, password=None)
+    jwt_payload = {
+        'sub': key_name,
+        'iss': "cdp",
+        'nbf': int(time.time()),
+        'exp': int(time.time()) + 120,
+        'uri': uri,
+    }
+    jwt_token = jwt.encode(
+        jwt_payload,
+        private_key,
+        algorithm='ES256',
+        headers={'kid': key_name, 'nonce': secrets.token_hex()},
+    )
+    return jwt_token
 
 
-api_url = "https://api.coinbase.com/v2/"
-auth = CoinbaseWalletAuth(API_KEY, API_SECRET)
+request_method = "GET"
+request_host   = "api.coinbase.com"
 
 
 def get_accounts():
-    headers = {"CB-VERSION": API_VERSION}
+    request_path = "/v2/accounts"
+    uri = f"{request_method} {request_host}{request_path}"
+    jwt_token = build_jwt(uri)
+    headers = {'Authorization': 'Bearer {}'.format(jwt_token)}
     params = {}
     accounts = []
     accounts_request = requests.get(
-        api_url + "accounts", headers=headers, params=params, auth=auth
+        "https://" + request_host + request_path, headers=headers, params=params
     )
     accounts_request.raise_for_status()
     accounts_response = accounts_request.json()
@@ -71,7 +69,6 @@ def get_accounts():
             f"https://api.coinbase.com{next_uri}",
             headers=headers,
             params={},
-            auth=auth,
         )
         accounts_request.raise_for_status()
         accounts_response = accounts_request.json()
@@ -81,29 +78,33 @@ def get_accounts():
 
 
 def get_account_information(account):
-    headers = {"CB-VERSION": API_VERSION}
-    params = {}
     account_id = account.get("id")
+    request_path = f"/v2/accounts/{account_id}"
+    uri = f"{request_method} {request_host}{request_path}"
+    jwt_token = build_jwt(uri)
+    headers = {'Authorization': 'Bearer {}'.format(jwt_token)}
+    params = {}
     information_request = requests.get(
-        api_url + f"accounts/{account_id}",
+        "https://" + request_host + request_path,
         headers=headers,
         params=params,
-        auth=auth,
     )
     information_request.raise_for_status()
     return information_request.json()["data"]
 
 
 def get_account_transactions(account):
-    headers = {"CB-VERSION": API_VERSION}
-    params = {"expand": "all", "order": "asc"}
     account_id = account.get("id")
+    request_path = f"/v2/accounts/{account_id}/transactions"
+    uri = f"{request_method} {request_host}{request_path}"
+    jwt_token = build_jwt(uri)
+    headers = {'Authorization': 'Bearer {}'.format(jwt_token)}
+    params = {"expand": "all", "order": "asc"}
     transactions = []
     transactions_request = requests.get(
-        api_url + f"accounts/{account_id}/transactions",
+        "https://" + request_host + request_path,
         headers=headers,
         params=params,
-        auth=auth,
     )
     transactions_request.raise_for_status()
     transactions_response = transactions_request.json()
@@ -114,7 +115,6 @@ def get_account_transactions(account):
             f"https://api.coinbase.com{next_uri}",
             headers=headers,
             params={},
-            auth=auth,
         )
         transactions_request.raise_for_status()
         transactions_response = transactions_request.json()
@@ -124,60 +124,62 @@ def get_account_transactions(account):
 
 
 def get_account_deposits(account):
-    headers = {"CB-VERSION": API_VERSION}
-    params = {"order": "asc"}
     account_id = account.get("id")
+    request_path = f"/v2/accounts/{account_id}/deposits"
+    uri = f"{request_method} {request_host}{request_path}"
+    jwt_token = build_jwt(uri)
+    headers = {'Authorization': 'Bearer {}'.format(jwt_token)}
+    params = {"order": "asc"}
     deposits = []
     deposits_request = requests.get(
-        api_url + f"accounts/{account_id}/deposits",
+        "https://" + request_host + request_path,
         headers=headers,
         params=params,
-        auth=auth,
     )
     deposits_request.raise_for_status()
     deposits_response = deposits_request.json()
     deposits.extend(deposits_response["data"])
-    next_uri = deposits_response["pagination"]["next_uri"]
-    while next_uri is not None:
+    next_uri = deposits_response["pagination"].get("next_uri")
+    while next_uri:
         deposits_request = requests.get(
             f"https://api.coinbase.com{next_uri}",
             headers=headers,
             params={},
-            auth=auth,
         )
         deposits_request.raise_for_status()
         deposits_response = deposits_request.json()
         deposits.extend(deposits_response["data"])
-        next_uri = deposits_response["pagination"]["next_uri"]
+        next_uri = deposits_response["pagination"].get("next_uri")
     return deposits
 
 
 def get_account_withdrawals(account):
-    headers = {"CB-VERSION": API_VERSION}
-    params = {"order": "asc"}
     account_id = account.get("id")
+    request_path = f"/v2/accounts/{account_id}/withdrawals"
+    uri = f"{request_method} {request_host}{request_path}"
+    jwt_token = build_jwt(uri)
+    headers = {'Authorization': 'Bearer {}'.format(jwt_token)}
+    params = {"order": "asc"}
     withdrawals = []
     withdrawals_request = requests.get(
-        api_url + f"accounts/{account_id}/withdrawals",
+        "https://" + request_host + request_path,
         headers=headers,
         params=params,
-        auth=auth,
     )
     withdrawals_request.raise_for_status()
     withdrawals_response = withdrawals_request.json()
     withdrawals.extend(withdrawals_response["data"])
-    next_uri = withdrawals_response["pagination"]["next_uri"]
-    while next_uri is not None:
+    next_uri = withdrawals_response["pagination"].get("next_uri")
+    while next_uri:
         withdrawals_request = requests.get(
             f"https://api.coinbase.com{next_uri}",
             headers=headers,
             params={},
-            auth=auth,
         )
         withdrawals_request.raise_for_status()
         withdrawals_response = withdrawals_request.json()
         withdrawals.extend(withdrawals_response["data"])
-        next_uri = withdrawals_response["pagination"]["next_uri"]
+        next_uri = withdrawals_response["pagination"].get("next_uri")
     return withdrawals
 
 
